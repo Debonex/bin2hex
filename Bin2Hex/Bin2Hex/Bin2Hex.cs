@@ -1,17 +1,16 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Text.RegularExpressions;
 using System.IO;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Diagnostics;
 
 namespace Bin2Hex
 {
-    class Program
+    class Bin2Hex
     {
         #region CONST Variables
         public const string VERSION = "1.0.0";
+        private const string INFO_FILE_PATH = "VerInfo.txt";
             #region regex
             private const string RE_BINFILE = @"^[a-zA-Z0-9 ._-]*.bin$";
             private const string RE_HEXFILE = @"^[a-zA-Z0-9 ._-]*.hex$";
@@ -48,16 +47,30 @@ namespace Bin2Hex
         /// byte which is read from bin file
         /// </summary>
         private static int b;
+        /// <summary>
+        /// CRC Computer
+        /// </summary>
+        private static CRCLib crcComputer;
+        /// <summary>
+        /// crc value
+        /// </summary>
+        private static uint crc;
 
         private static StringBuilder sb = new StringBuilder();
         static void Main(string[] args)
         {
-            if (args.Length != 2 || !Regex.IsMatch(args[0],RE_BINFILE) || !Regex.IsMatch(args[1],RE_HEXFILE))
+            
+            if (args.Length != 2 || !Regex.IsMatch(args[0], RE_BINFILE) || !Regex.IsMatch(args[1], RE_HEXFILE))
             {
                 Console.WriteLine(HINT_PARAM_ERROR);
                 return;
             }
+            Stopwatch sw = new Stopwatch();
+            sw.Start();
             FileInfo binFile = new FileInfo(args[0]);
+            crcComputer = new CRCLib(CRCTYPE.CRC32);
+            crc = 0xFFFFFFFF;
+            Console.WriteLine("解析bin文件...");
             using (StreamReader reader = new StreamReader(binFile.OpenRead()))
             {
                 for (i = 0; i < reader.BaseStream.Length; i++)
@@ -65,25 +78,29 @@ namespace Bin2Hex
                     b = reader.BaseStream.ReadByte();
                     lineBuff += b.ToString("X2");
                     checksum_line += b;
+                    crc = (uint)crcComputer.Update(crc, (byte)b);
 
-                    if (i % SEGMENT_BYTES_COUNT == 0) generateSegmentLine();                    
+                    if (i % SEGMENT_BYTES_COUNT == 0) generateSegmentLine();
                     if (i % 0x10 == 0xF) generateDataLine();
                 }
                 while (i % 0x10 != 0)
                 {
                     checksum_line += 0xFF;
+                    crc = (uint)crcComputer.Update(crc, 0xFF);
                     lineBuff += "FF";
                     i++;
                 }
                 if (lineBuff != string.Empty) generateDataLine();
             }
+            Console.WriteLine("开始填充剩余空间...");
             //fulfill the remain space with 0xFF
             while (true)
             {
                 if (segment_off == 0x0000) generateSegmentLine();
                 if (count_segment > 0x80) 
                     break;
-                fillDataLine();
+                if (count_segment != 0x80 || segment_off != 0xFFF0) fillDataLine();
+                else fillInfoLine();
             }
             //end of hex
             sb.AppendLine(":00000001FF");
@@ -92,6 +109,7 @@ namespace Bin2Hex
                 writer.Write(sb.ToString());
                 writer.Close();
             }
+            Console.WriteLine("Completed in: "+sw.ElapsedMilliseconds + " ms");
         }
 
         /// <summary>
@@ -111,8 +129,9 @@ namespace Bin2Hex
         /// </summary>
         private static void generateDataLine()
         {
+            
             checksum_line += (segment_off >> 8) + (segment_off & 0x00FF) + 0x10;
-            lineBuff = ":10" + (segment_off).ToString("X4") + "00" + lineBuff + ((256 - (byte)checksum_line)%256).ToString("X2");
+            lineBuff = ":10" + (segment_off).ToString("X4") + "00" + lineBuff + ((0x100 - (byte)checksum_line)%256).ToString("X2");
             sb.AppendLine(lineBuff);
             lineBuff = string.Empty;
             checksum_line = 0;
@@ -127,8 +146,51 @@ namespace Bin2Hex
         private static void fillDataLine()
         {
             checksum_line = (segment_off >> 8) + (segment_off & 0x00FF);
-            sb.AppendLine(":10" + (segment_off).ToString("X4") + "00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF" + ((256 - (byte)checksum_line) % 256).ToString("X2"));
+            for (int k = 0; k < 16; k++) crc = (uint)crcComputer.Update(crc, 0xFF);
+            sb.AppendLine(":10" + (segment_off).ToString("X4") + "00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF" + ((0x100 - (byte)checksum_line) % 256).ToString("X2"));
             segment_off += 0x10;
+        }
+
+        private static void fillInfoLine()
+        {
+            int infoPt = 0;
+            checksum_line = 0;
+            FileInfo infoFile = null;
+            try
+            {
+                infoFile = new FileInfo(INFO_FILE_PATH);
+                using (StreamReader reader = new StreamReader(infoFile.OpenRead()))
+                {
+                    for (infoPt = 0; infoPt < reader.BaseStream.Length && infoPt<12; infoPt++)
+                    {
+                        b = reader.BaseStream.ReadByte();
+                        lineBuff += b.ToString("X2");
+                        checksum_line += b;
+                        crc = (uint)crcComputer.Update(crc, (byte)b);
+                    }
+                    while (infoPt < 12)
+                    {
+                        checksum_line += ' ';
+                        lineBuff += " ";
+                        infoPt++;
+                    }
+                    crc = crc ^ 0xFFFFFFFF;
+                    checksum_line += (segment_off >> 8) + (segment_off & 0x00FF) + 0x10;
+                    checksum_line += (int)((crc >> 24) + ((crc >> 16) & 0xFF) + ((crc >> 8) & 0xFF) + (crc & 0xFF)); 
+                    lineBuff = ":10" + (segment_off).ToString("X4") + "00" + lineBuff + crc.ToString("X8") + ((0x100 - (byte)checksum_line) % 256).ToString("X2");
+                    sb.AppendLine(lineBuff);
+                    lineBuff = string.Empty;
+                    checksum_line = 0;
+
+                    segment_off += 0x10;
+                }
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine("VerInfo.txt not found! "+e.Message);
+                Environment.Exit(0);
+                return;
+            }
         }
     }
 }
