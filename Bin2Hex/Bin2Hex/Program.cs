@@ -41,6 +41,10 @@ namespace Bin2Hex
         /// </summary>
         private static int i;
         /// <summary>
+        /// the offset in segment
+        /// </summary>
+        private static UInt16 segment_off = 0x0000;
+        /// <summary>
         /// byte which is read from bin file
         /// </summary>
         private static int b;
@@ -63,10 +67,31 @@ namespace Bin2Hex
                     checksum_line += b;
 
                     if (i % SEGMENT_BYTES_COUNT == 0) generateSegmentLine();                    
-                    if (i % 0x10 == 0) generateDataLine();
+                    if (i % 0x10 == 0xF) generateDataLine();
                 }
+                while (i % 0x10 != 0)
+                {
+                    checksum_line += 0xFF;
+                    lineBuff += "FF";
+                    i++;
+                }
+                if (lineBuff != string.Empty) generateDataLine();
             }
-            Console.Write(sb.ToString());
+            //fulfill the remain space with 0xFF
+            while (true)
+            {
+                if (segment_off == 0x0000) generateSegmentLine();
+                if (count_segment > 0x80) 
+                    break;
+                fillDataLine();
+            }
+            //end of hex
+            sb.AppendLine(":00000001FF");
+            using (StreamWriter writer = new StreamWriter(File.OpenWrite(args[1])))
+            {
+                writer.Write(sb.ToString());
+                writer.Close();
+            }
         }
 
         /// <summary>
@@ -86,12 +111,24 @@ namespace Bin2Hex
         /// </summary>
         private static void generateDataLine()
         {
-            int addressFiled = i%SEGMENT_BYTES_COUNT;
-            checksum_line += (addressFiled>>8)+(byte)addressFiled+0x10;
-            lineBuff = ":10" + (i % SEGMENT_BYTES_COUNT).ToString("X4") + "00" + lineBuff + (256-(byte)checksum_line).ToString("X2");
+            checksum_line += (segment_off >> 8) + (segment_off & 0x00FF) + 0x10;
+            lineBuff = ":10" + (segment_off).ToString("X4") + "00" + lineBuff + ((256 - (byte)checksum_line)%256).ToString("X2");
             sb.AppendLine(lineBuff);
             lineBuff = string.Empty;
             checksum_line = 0;
+            
+            segment_off += 0x10;
+        }
+
+
+        /// <summary>
+        /// fill data line with "0xFF"
+        /// </summary>
+        private static void fillDataLine()
+        {
+            checksum_line = (segment_off >> 8) + (segment_off & 0x00FF);
+            sb.AppendLine(":10" + (segment_off).ToString("X4") + "00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF" + ((256 - (byte)checksum_line) % 256).ToString("X2"));
+            segment_off += 0x10;
         }
     }
 }
