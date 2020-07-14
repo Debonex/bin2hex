@@ -99,7 +99,7 @@ namespace Bin2Hex
                 if (segment_off == 0x0000) generateSegmentLine();
                 if (count_segment > 0x80) 
                     break;
-                if (count_segment != 0x80 || segment_off != 0xFFF0) fillDataLine();
+                if (!(count_segment == 0x80 && segment_off >= 0xFFE0)) fillDataLine();
                 else fillInfoLine();
             }
             //end of hex
@@ -131,7 +131,7 @@ namespace Bin2Hex
         {
             
             checksum_line += (segment_off >> 8) + (segment_off & 0x00FF) + 0x10;
-            lineBuff = ":10" + (segment_off).ToString("X4") + "00" + lineBuff + ((0x100 - (byte)checksum_line)%256).ToString("X2");
+            lineBuff = ":10" + (segment_off).ToString("X4") + "00" + lineBuff + lineChecksum();
             sb.AppendLine(lineBuff);
             lineBuff = string.Empty;
             checksum_line = 0;
@@ -147,7 +147,7 @@ namespace Bin2Hex
         {
             checksum_line = (segment_off >> 8) + (segment_off & 0x00FF);
             for (int k = 0; k < 16; k++) crc = (uint)crcComputer.Update(crc, 0xFF);
-            sb.AppendLine(":10" + (segment_off).ToString("X4") + "00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF" + ((0x100 - (byte)checksum_line) % 256).ToString("X2"));
+            sb.AppendLine(":10" + (segment_off).ToString("X4") + "00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF" + lineChecksum());
             segment_off += 0x10;
         }
 
@@ -161,27 +161,53 @@ namespace Bin2Hex
                 infoFile = new FileInfo(INFO_FILE_PATH);
                 using (StreamReader reader = new StreamReader(infoFile.OpenRead()))
                 {
-                    for (infoPt = 0; infoPt < reader.BaseStream.Length && infoPt<12; infoPt++)
+                    /// line of version info 
+                    for (infoPt = 0; infoPt < reader.BaseStream.Length && infoPt < 16; infoPt++)
                     {
                         b = reader.BaseStream.ReadByte();
                         lineBuff += b.ToString("X2");
                         checksum_line += b;
                         crc = (uint)crcComputer.Update(crc, (byte)b);
                     }
-                    while (infoPt < 12)
+                    while (infoPt < 16)
                     {
                         checksum_line += ' ';
-                        lineBuff += " ";
+                        crc = (uint)crcComputer.Update(crc, (byte)' ');
+                        lineBuff += ((byte)' ').ToString("X2");
                         infoPt++;
                     }
-                    crc = crc ^ 0xFFFFFFFF;
-                    checksum_line += (segment_off >> 8) + (segment_off & 0x00FF) + 0x10;
-                    checksum_line += (int)((crc >> 24) + ((crc >> 16) & 0xFF) + ((crc >> 8) & 0xFF) + (crc & 0xFF)); 
-                    lineBuff = ":10" + (segment_off).ToString("X4") + "00" + lineBuff + crc.ToString("X8") + ((0x100 - (byte)checksum_line) % 256).ToString("X2");
+                    checksum_line += (segment_off >> 8) + (segment_off & 0xFF) + 0x10;
+                    lineBuff = ":10" + segment_off.ToString("X4") + "00" + lineBuff + lineChecksum();
                     sb.AppendLine(lineBuff);
                     lineBuff = string.Empty;
                     checksum_line = 0;
+                    segment_off += 0x10;
 
+                    /// line of system time and crc
+                    DateTime now = DateTime.Now;
+                    int dbcYear = Decimal2DBC(now.Year) & 0xFF;
+                    int dbcMonth = Decimal2DBC(now.Month) & 0xFF;
+                    int dbcDay = Decimal2DBC(now.Day) & 0xFF;
+                    checksum_line += dbcYear + dbcMonth + dbcDay;
+                    crc = (uint)crcComputer.Update(crc, (byte)dbcYear);
+                    crc = (uint)crcComputer.Update(crc, (byte)dbcMonth);
+                    crc = (uint)crcComputer.Update(crc, (byte)dbcDay);
+                    lineBuff += dbcYear.ToString("X2") + dbcMonth.ToString("X2") + dbcDay.ToString("X2");
+
+                    for (int k = 0; k < 9; ++k)
+                    {
+                        checksum_line += ' ';
+                        crc = (uint)crcComputer.Update(crc, (byte)' ');
+                        lineBuff += ((byte)' ').ToString("X2");
+                    }
+
+                    crc = crc ^ 0xFFFFFFFF;
+                    checksum_line += (segment_off >> 8) + (segment_off & 0x00FF) + 0x10;
+                    checksum_line += (int)((crc >> 24) + ((crc >> 16) & 0xFF) + ((crc >> 8) & 0xFF) + (crc & 0xFF)); 
+                    lineBuff = ":10" + (segment_off).ToString("X4") + "00" + lineBuff + crc.ToString("X8") + lineChecksum();
+                    sb.AppendLine(lineBuff);
+                    lineBuff = string.Empty;
+                    checksum_line = 0;
                     segment_off += 0x10;
                 }
             }
@@ -191,6 +217,21 @@ namespace Bin2Hex
                 Environment.Exit(0);
                 return;
             }
+        }
+
+        private static int Decimal2DBC(int dec){
+            int res = 0;
+            int count = 0;
+            while(dec >0){
+                res += (dec % 10) << (4 * count++);
+                dec /= 10;
+            }
+            return res;
+        }
+
+        private static string lineChecksum()
+        {
+            return ((0x100 - (byte)checksum_line) % 256).ToString("X2");
         }
     }
 }
